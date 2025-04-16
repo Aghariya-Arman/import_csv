@@ -1,0 +1,175 @@
+ public function exportMenuData()
+    {
+        // Define CSV file headers
+        $headers = [
+            "Content-type" => "text/csv",
+            "Content-Disposition" => "attachment; filename=menu_data.csv",
+            "Pragma" => "no-cache",
+            "Cache-Control" => "must-revalidate, post-check=0, pre-check=0",
+            "Expires" => "0"
+        ];
+
+        // Open output stream
+        $callback = function () {
+            $file = fopen('php://output', 'w');
+
+            // Add CSV header
+            fputcsv($file, ['Category Name', 'Item Name', 'SKU Variant', 'SKU Price', 'SKU Dine In Price', 'SKU Pickup In Price', 'Resturant ID']);
+
+            // Fetch data from the database
+            $categories = Category::all();
+
+            foreach ($categories as $category) {
+                $products = Products::where('menu_category_id', $category->id)
+                    ->where('restaurants_id', auth()->user()->resturent_id)
+                    ->get();
+
+                foreach ($products as $product) {
+                    $packages = ProductPackage::where('menu_product_id', $product->id)->get();
+
+                    foreach ($packages as $package) {
+                        fputcsv($file, [
+                            $category->category_name,
+                            $product->item_name,
+                            $package->sku_varient,
+                            $package->sku_price,
+                            $package->dine_in_price,
+                            $package->pickup_price,
+                            auth()->user()->resturent_id,
+                        ]);
+                    }
+                }
+            }
+
+            fclose($file);
+        };
+
+        // Return response with CSV data
+        return Response::stream($callback, 200, $headers);
+    }
+
+    public function importMenuData(Request $request)
+    {
+        $request->validate([
+            'file' => 'required|mimes:csv,txt'
+        ]);
+
+
+        $file = fopen($request->file('file')->getPathname(), 'r');
+
+
+        fgetcsv($file);
+
+        // Counters for messages
+        $categoriesAdded = 0;
+        $productsAdded = 0;
+        $packagesAdded = 0;
+        $duplicatesSkipped = 0;
+        $errors = [];
+
+        // Process each row
+        while (($row = fgetcsv($file)) !== false) {
+            try {
+                $categoryName = trim($row[0]); // Category Name
+                $itemName = trim($row[1]); // Item Name
+                $skuVariant = trim($row[2]); // SKU Variant
+                $skuPrice = trim($row[3]); // SKU Price
+                $skuDinein = trim($row[4]); // SKU Dine In
+                $skuPickup = trim($row[5]); // SKU Pickup
+                $resturantId = trim($row[6]); //Resturant ID
+
+
+
+                // Ensure required fields are not empty
+                // if (empty($categoryName) || empty($itemName) || empty($skuVariant) || empty($skuPrice) || empty($skuDinein) || empty($skuPickup) || empty($resturantId)) {
+                //     $errors[] = "Missing required fields in row: " . implode(", ", $row);
+                //     // dd($errors);
+                //     continue;
+                // }
+                if (
+                    $categoryName === '' || $itemName === '' || $skuVariant === '' || $skuPrice === '' || $skuDinein === '' || $skuPickup === '' ||
+                    $resturantId === ''
+                ) {
+                    $errors[] = "Missing required fields in row: " . implode(", ", $row);
+                    continue;
+                }
+                if ((int)$resturantId !== auth()->user()->resturent_id) {
+                    $errors[] = "Skipped row due to restaurant ID mismatch: " . implode(", ", $row);
+                    continue;
+                }
+
+                // Check or insert category
+                $category = Category::where('category_name', $categoryName)->first();
+                if (!$category) {
+                    $category = Category::create(['category_name' => $categoryName]);
+                    $categoriesAdded++;
+                }
+
+                // Check or insert product
+                $product = Products::where('item_name', $itemName)
+                    ->where('menu_category_id', $category->id)
+                    ->where('restaurants_id', auth()->user()->resturent_id)
+                    ->first();
+
+                if (!$product) {
+                    $product = Products::create([
+                        'item_name' => $itemName,
+                        'item_desc' => $itemName,
+                        'menu_category_id' => $category->id
+                    ]);
+                    $productsAdded++;
+                }
+
+                // Check for existing package
+                $packageExists = ProductPackage::where('menu_product_id', $product->id)
+                    ->where('sku_varient', $skuVariant)
+                    // ->where('sku_price', $skuPrice)
+                    ->exists();
+
+                // dd($product->id."--".$skuVariant);
+
+
+                if (!$packageExists) {
+                    ProductPackage::create([
+                        'menu_product_id' => $product->id,
+                        'sku_varient' => $skuVariant,
+                        'sku_price' => $skuPrice,
+                        'dine_in_price' => $skuDinein,
+                        'pickup_price' => $skuPickup,
+                    ]);
+                    $packagesAdded++;
+                } else {
+                    ProductPackage::where('menu_product_id', $product->id)
+                        ->where('sku_varient', $skuVariant)->update([
+                            'sku_price' => $skuPrice,
+                            'dine_in_price' => $skuDinein,
+                            'pickup_price' => $skuPickup,
+                        ]);
+                }
+            } catch (\Exception $e) {
+                $errors[] = "Error processing row: " . implode(", ", $row) . " - " . $e->getMessage();
+            }
+        }
+
+        fclose($file);
+
+        // Generate response message
+        $message = "";
+        // $message .= "Categories Added: $categoriesAdded";
+        // $message .= "Products Added: $productsAdded";
+        // $message .= "Packages Added: $packagesAdded";
+        // $message .= "Duplicates Skipped: $duplicatesSkipped";
+
+
+
+
+        if (!empty($errors)) {
+            $message .= " Errors: <br>" . implode("<br>", $errors);
+            return back()->with('danger', $message);
+        } else {
+            $message = "Data Added SuccessFully:";
+        }
+        // dd($message);
+
+        return back()->with('success', $message);
+    }
